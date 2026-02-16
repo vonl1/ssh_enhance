@@ -1,0 +1,7 @@
+---
+# 配置文件路径
+ssh_config_d_file: "/etc/ssh/ssh_config.d/50-redhat.conf"
+sshd_config_file: "/etc/ssh/sshd_config"
+
+# SSH 监听端口
+ssh_port: 65535

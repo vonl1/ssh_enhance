@@ -1,0 +1,92 @@
+---
+# tasks file for roles/ssh_enhance
+- name: 1. 关闭 selinux 
+  block:
+    - name: 1.1 永久禁用 selinux （修改配置文件）
+      ansible.posix.selinux:
+        state: disabled
+    - name: 1.2 立即切换到宽容模式
+      ansible.builtin.shell: setenforce 0
+      when:
+        - ansible_selinux.status == "enabled"
+        - ansible_selinux.mode == "enforcing"
+      failed_when: false
+  when: ansible_selinux.status != "disabled"
+
+- name: 2. 防火墙开放 {{ssh_port}}/tcp port
+  ansible.posix.firewalld:
+    zone: public
+    port: "{{ssh_port}}/tcp"
+    permanent: yes
+    state: enabled
+    immediate: yes
+
+- name: 3. 上传roles/ssh_enhance/files下的公钥
+  ansible.posix.authorized_key:
+    user: root
+    state: present
+    key: "{{ query('file', 'id_ed25519.pub','id_ed25519_sk.pub') | join('\n') }}"
+    exclusive: true
+  notify: reload sshd
+
+- name: 4. 修复 50-redhat.conf 中的 GSSAPI 报错
+  replace:
+    path: "{{ ssh_config_d_file }}"
+    regexp: '^(GSSAPIAuthentication\s+yes)'
+    replace: '# \1'
+  failed_when: false
+
+- name: 5. 开启抗量子 (PQ) 密钥交换算法
+  lineinfile:
+    path: "{{ sshd_config_file }}"
+    regexp: '^#?KexAlgorithms'
+    line: "KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256@libssh.org"
+    state: present
+    validate: '/usr/sbin/sshd -t -f %s'
+
+- name: 6. 强制启用 Ed25519 算法支持
+  lineinfile:
+    path: "{{ sshd_config_file }}"
+    regexp: '^#?PubkeyAcceptedAlgorithms'
+    line: "PubkeyAcceptedAlgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519,sk-ssh-ed25519@openssh.com"
+    state: present
+
+- name: 7. SSH 监听 {{ssh_port}} 端口
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?Port\s+'
+    line: "Port {{ssh_port}}"
+    state: present
+    validate: '/usr/sbin/sshd -t -f %s'
+    
+- name: 8. SSH设置root用户禁用密码登录
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin\s+'
+    line: 'PermitRootLogin prohibit-password'
+    state: present
+    validate: '/usr/sbin/sshd -t -f %s'
+      
+- name: 9. 禁用密码登录
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication\s+'
+    line: 'PasswordAuthentication no'
+    validate: '/usr/sbin/sshd -t -f %s'
+       
+- name: 10. 设定最大认证次数为 3
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?MaxAuthTries\s+'
+    line: 'MaxAuthTries 3'
+    state: present
+    validate: '/usr/sbin/sshd -t -f %s'
+  notify: reload sshd
+
+- name: 11. firewalld 移除 ssh/22 端口
+  ansible.posix.firewalld:
+    zone: public
+    service: ssh
+    state: disabled
+    permanent: true
+    immediate: true
